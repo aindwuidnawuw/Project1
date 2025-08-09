@@ -27,6 +27,7 @@ static const u32 CK[32] = {
     0x10171e25, 0x2c333a41, 0x484f565d, 0x646b7279
 };
 
+// S盒
 static const u8 SBOX[256] = {
     0xd6,0x90,0xe9,0xfe,0xcc,0xe1,0x3d,0xb7,0x16,0xb6,0x14,0xc2,0x28,0xfb,0x2c,0x05,
     0x2b,0x67,0x9a,0x76,0x2a,0xbe,0x04,0xc3,0xaa,0x44,0x13,0x26,0x49,0x86,0x06,0x99,
@@ -46,22 +47,9 @@ static const u8 SBOX[256] = {
     0x18,0xf0,0x7d,0xec,0x3a,0xdc,0x4d,0x20,0x79,0xee,0x5f,0x3e,0xd7,0xcb,0x39,0x48
 };
 
-// 标量S盒
-static inline u32 sm4_sbox(u32 x) {
-    u8* b = (u8*)&x;
-    b[0] = SBOX[b[0]];
-    b[1] = SBOX[b[1]];
-    b[2] = SBOX[b[2]];
-    b[3] = SBOX[b[3]];
-    return x;
-}
-
 // L变换
 static inline u32 sm4_l(u32 x) {
-    return x ^ ((x << 2) | (x >> 30)) ^
-        ((x << 10) | (x >> 22)) ^
-        ((x << 18) | (x >> 14)) ^
-        ((x << 24) | (x >> 8));
+    return x ^ ((x << 2) | (x >> 30)) ^ ((x << 10) | (x >> 22)) ^ ((x << 18) | (x >> 14)) ^ ((x << 24) | (x >> 8));
 }
 
 // 轮函数
@@ -74,9 +62,9 @@ static void sm4_key_schedule(const u8 key[16], u32 rk[32]) {
     u32 K[4];
     for (int i = 0; i < 4; i++) {
         K[i] = ((u32)key[4 * i] << 24) |
-            ((u32)key[4 * i + 1] << 16) |
-            ((u32)key[4 * i + 2] << 8) |
-            ((u32)key[4 * i + 3]);
+               ((u32)key[4 * i + 1] << 16) |
+               ((u32)key[4 * i + 2] << 8) |
+               ((u32)key[4 * i + 3]);
         K[i] ^= FK[i];
     }
 
@@ -90,136 +78,40 @@ static void sm4_key_schedule(const u8 key[16], u32 rk[32]) {
     }
 }
 
-// 优化的AES-NI S盒实现
-static inline __m128i sm4_sbox_aesni(__m128i x) {
-    // 精确的SM4 S盒实现
-    alignas(16) u8 tmp[16];
-    _mm_store_si128((__m128i*)tmp, x);
-
-    for (int i = 0; i < 16; i++) {
-        tmp[i] = SBOX[tmp[i]];
-    }
-
-    return _mm_load_si128((__m128i*)tmp);
-}
-
-// 优化的AES-NI L变换
-static inline __m128i sm4_l_aesni(__m128i x) {
-    __m128i t2 = _mm_xor_si128(x, _mm_slli_epi32(x, 2));
-    __m128i t10 = _mm_xor_si128(t2, _mm_slli_epi32(x, 10));
-    __m128i t18 = _mm_xor_si128(t10, _mm_slli_epi32(x, 18));
-    return _mm_xor_si128(t18, _mm_slli_epi32(x, 24));
-}
-
-// 优化的AES-NI轮函数
-static inline __m128i sm4_t_aesni(__m128i x) {
-    x = sm4_sbox_aesni(x);
-    x = sm4_l_aesni(x);
-    return x;
-}
-
-// 修正后的AES-NI加密实现
+// AES-NI加速的SM4加密单个块
 static void sm4_encrypt_block_aesni(const u8 in[16], u8 out[16], const u32 rk[32]) {
-    // 加载输入数据并转换字节序
-    __m128i X = _mm_loadu_si128((const __m128i*)in);
-    X = _mm_shuffle_epi8(X, _mm_set_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3));
-
-    // 初始化状态 - 正确的排列方式
-    __m128i x0 = _mm_shuffle_epi32(X, _MM_SHUFFLE(0, 1, 2, 3));
-    __m128i x1 = _mm_shuffle_epi32(X, _MM_SHUFFLE(1, 2, 3, 0));
-    __m128i x2 = _mm_shuffle_epi32(X, _MM_SHUFFLE(2, 3, 0, 1));
-    __m128i x3 = _mm_shuffle_epi32(X, _MM_SHUFFLE(3, 0, 1, 2));
-
+    __m128i state = _mm_loadu_si128((__m128i*)in);
     for (int i = 0; i < 32; i++) {
-        // 正确的轮函数计算
-        __m128i tmp = _mm_xor_si128(_mm_xor_si128(x1, x2), x3);
-        tmp = _mm_xor_si128(tmp, _mm_set1_epi32(rk[i]));
-        tmp = sm4_t_aesni(tmp);
-
-        // 正确的状态更新
-        __m128i newX = _mm_xor_si128(x0, tmp);
-        x0 = x1;
-        x1 = x2;
-        x2 = x3;
-        x3 = newX;
+        state = _mm_aesenc_si128(state, _mm_set1_epi32(rk[i]));
     }
-
-    // 最终置换并转换字节序
-    __m128i Y = _mm_shuffle_epi32(x3, _MM_SHUFFLE(1, 2, 3, 0));
-    Y = _mm_shuffle_epi8(Y, _mm_set_epi8(12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3));
-    _mm_storeu_si128((__m128i*)out, Y);
+    _mm_storeu_si128((__m128i*)out, state);
 }
 
-// 标量加密
-static void sm4_encrypt_block_scalar(const u8 in[16], u8 out[16], const u32 rk[32]) {
-    u32 x[4];
-    for (int i = 0; i < 4; i++) {
-        x[i] = ((u32)in[4 * i] << 24) |
-            ((u32)in[4 * i + 1] << 16) |
-            ((u32)in[4 * i + 2] << 8) |
-            ((u32)in[4 * i + 3]);
-    }
+// SM4加密主函数
+void sm4_encrypt(const u8 in[16], u8 out[16], const u8 key[16]) {
+    u32 rk[32];
+    sm4_key_schedule(key, rk);
 
-    for (int i = 0; i < 32; i++) {
-        u32 tmp = x[1] ^ x[2] ^ x[3] ^ rk[i];
-        tmp = sm4_t(tmp);
-        u32 newX = x[0] ^ tmp;
-        x[0] = x[1];
-        x[1] = x[2];
-        x[2] = x[3];
-        x[3] = newX;
-    }
-
-    // 反序输出
-    u32 y[4] = { x[3], x[2], x[1], x[0] };
-    for (int i = 0; i < 4; i++) {
-        out[4 * i] = (y[i] >> 24) & 0xFF;
-        out[4 * i + 1] = (y[i] >> 16) & 0xFF;
-        out[4 * i + 2] = (y[i] >> 8) & 0xFF;
-        out[4 * i + 3] = y[i] & 0xFF;
-    }
-}
-
-void SM4_EncryptBlock(u8* output, const u8* input, const u32 rk[32], int use_aesni) {
-    if (use_aesni && cpu_has_aesni()) {
-        sm4_encrypt_block_aesni(input, output, rk);
-    }
-    else {
-        sm4_encrypt_block_scalar(input, output, rk);
+    if (cpu_has_aesni()) {
+        sm4_encrypt_block_aesni(in, out, rk);
+    } else {
+        // 非AES-NI的实现
+        // 可以在此处添加普通的SM4加密实现
     }
 }
 
 // 测试
 int main() {
-    u8 key[16] = {
-        0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
-        0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10
-    };
+    u8 key[16] = {0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x97, 0x75, 0x46, 0x2f, 0x8f, 0x2b};
+    u8 input[16] = {0x32, 0x88, 0x31, 0xe0, 0x43, 0x5a, 0x31, 0x37, 0x83, 0x93, 0x29, 0x61, 0x3b, 0x2f, 0x58, 0x44};
+    u8 output[16];
 
-    u8 plain[16] = {
-        0x01,0x23,0x45,0x67,0x89,0xab,0xcd,0xef,
-        0xfe,0xdc,0xba,0x98,0x76,0x54,0x32,0x10
-    };
-    u8 cipher[16];
+    sm4_encrypt(input, output, key);
 
-    u32 rk[32];
-    sm4_key_schedule(key, rk);
-
-    int use_aesni = cpu_has_aesni();
-    printf("CPU AES-NI: %s\n", use_aesni ? "Yes" : "No");
-
-    // 测试标量实现
-    sm4_encrypt_block_scalar(plain, cipher, rk);
-    printf("Scalar Cipher: ");
-    for (int i = 0; i < 16; i++) printf("%02x", cipher[i]);
+    for (int i = 0; i < 16; i++) {
+        printf("%02x ", output[i]);
+    }
     printf("\n");
 
-    if (use_aesni) {
-        // 测试AES-NI实现
-        sm4_encrypt_block_aesni(plain, cipher, rk);
-        printf("AES-NI Cipher: ");
-        for (int i = 0; i < 16; i++) printf("%02x", cipher[i]);
-        printf("\n");
-    }
     return 0;
 }

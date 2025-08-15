@@ -1,5 +1,4 @@
-﻿// sm3_avx2_fixed.cpp
-#include <immintrin.h>
+﻿#include <immintrin.h>
 #include <iostream>
 #include <vector>
 #include <array>

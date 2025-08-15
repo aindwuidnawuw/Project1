@@ -163,7 +163,7 @@ def recover_d(r1:int, s1:int, r2:int, s2:int) -> int:
     return d_rec
 
 if __name__ == "__main__":
-    print("=== 演示 #2: SM2 重复使用同一 k 对两条消息签名 -> 恢复私钥 ===")
+    print(" SM2 重复使用同一 k 对两条消息签名 -> 恢复私钥 ")
     while True:
         d = int.from_bytes(os.urandom(32), 'big') % n
         if 1 <= d <= n-2:
